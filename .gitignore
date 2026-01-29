@@ -1,0 +1,95 @@
+# =========================
+# Python / packaging
+# =========================
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.env
+.venv
+venv/
+ENV/
+env/
+
+# =========================
+# Conda
+# =========================
+conda-meta/
+*.conda
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# OS / editor junk
+# =========================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# =========================
+# Logs and temp files
+# =========================
+*.log
+*.tmp
+*.bak
+
+# =========================
+# Data lake
+# =========================
+# ERA5 NetCDF / Zarr / derived datasets
+data_lake/**
+
+# =========================
+# Figures and  outputs
+# =========================
+viz/quicklooks/
+viz/exports/
+viz/tmp/
+
+# =========================
+# OpenFAST
+# =========================
+openfast_build/
+openfast_runs/
+*.out
+*.sum
+*.dbg
+*.ech
+*.lin
+*.fst
+*.dat
+
+# =========================
+# CDS / API credentials
+# =========================
+.cdsapirc
+
+# =========================
+# Large scientific data formats
+# =========================
+*.nc
+*.zarr
+*.grib
+*.grb
+*.h5
+*.hdf5
+*.parquet
+
+# =========================
+# Misc
+# =========================
+.cache/
+pytest_cache/
+.mypy_cache/
+
