@@ -4,8 +4,9 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
+import argparse
 
-from njord.config import ACTIVE_REGION_KEY, DEFAULT_START, DEFAULT_END
+from njord.config import ACTIVE_REGION_KEY, DEFAULT_START, DEFAULT_END, REGIONS
 
 def get_time_name(ds: xr.Dataset) -> str:
     """
@@ -43,9 +44,20 @@ def wind_speed_dir_from(u: xr.DataArray, v: xr.DataArray) -> tuple[xr.DataArray,
 
     return speed, dir_from
 
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Create wind-field quicklook plots from ERA5 u10/v10.")
+    p.add_argument("--region", default=ACTIVE_REGION_KEY, choices=sorted(REGIONS.keys()))
+    p.add_argument("--start", default=DEFAULT_START)
+    p.add_argument("--end", default=DEFAULT_END)
+    return p.parse_args()
+
+
 def main() -> int:
-    region_key = ACTIVE_REGION_KEY
-    nc_path = Path(f"data_lake/bronze/era5/{region_key}/era5_single_levels_u10v10_{DEFAULT_START}_to_{DEFAULT_END}.nc")
+    args = parse_args()
+    region_key = args.region
+
+    nc_path = Path(f"data_lake/bronze/era5/{region_key}/era5_single_levels_u10v10_{args.start}_to_{args.end}.nc")
     if not nc_path.exists():
         raise FileNotFoundError(f"Missing file: {nc_path}")
 
@@ -63,27 +75,22 @@ def main() -> int:
 
     u10 = ds["u10"]
     v10 = ds["v10"]
-
     speed, dir_from = wind_speed_dir_from(u10, v10)
 
-    # Some stats
     smin = float(speed.min().values)
     smax = float(speed.max().values)
     nt = int(speed.sizes.get(tname, -1))
     print(f"Speed range (m/s): min={smin:.2f}, max={smax:.2f}")
     print("Time steps:", nt)
 
-    # Pull timestamps
     times = ds[tname].values
     idxs = [0, len(times)//2, len(times)-1]
 
     for i in idxs:
         t = np.datetime_as_string(times[i], unit="h")
-
         sp = speed.isel({tname: i})
         dr = dir_from.isel({tname: i})
 
-        # Plot speed
         plt.figure()
         sp.plot()
         plt.title(f"10m Wind Speed (m/s) | {region_key} | {t}")
@@ -91,7 +98,6 @@ def main() -> int:
         plt.savefig(f1, dpi=160, bbox_inches="tight")
         plt.close()
 
-        # Plot direction
         plt.figure()
         dr.plot(vmin=0, vmax=360)
         plt.title(f"10m Wind Direction FROM (deg) | {region_key} | {t}")
@@ -102,22 +108,13 @@ def main() -> int:
         print("Saved:", f1)
         print("Saved:", f2)
 
-    # Save a silver derived dataset
     silver_dir = Path("data_lake/silver")
     silver_dir.mkdir(parents=True, exist_ok=True)
-    silver_path = silver_dir / f"{region_key}_u10v10_speed_dir_{DEFAULT_START}_to_{DEFAULT_END}.nc"
+    silver_path = silver_dir / f"{region_key}_u10v10_speed_dir_{args.start}_to_{args.end}.nc"
 
-    derived = xr.Dataset(
-        {
-            "u10": u10,
-            "v10": v10,
-            "speed10": speed,
-            "dir_from10": dir_from,
-        }
-    )
+    derived = xr.Dataset({"u10": u10, "v10": v10, "speed10": speed, "dir_from10": dir_from})
     derived.to_netcdf(silver_path)
     print("Wrote silver:", silver_path)
-
     return 0
 
 if __name__ == "__main__":
