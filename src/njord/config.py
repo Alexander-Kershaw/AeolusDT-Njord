@@ -9,6 +9,13 @@ class StudyRegion:
     lon_min: float
     lon_max: float
 
+@dataclass(frozen=True)
+class FarmSite:
+    region_key: str
+    name: str
+    lat0: float
+    lon0: float
+
 #  Time window for ERA5 data retreival
 DEFAULT_START = "2020-01-01"
 DEFAULT_END   = "2020-01-03"
@@ -49,3 +56,10 @@ REGIONS = {
 
 ACTIVE_REGION_KEY = "tampen_box_a"
 ACTIVE_REGION = REGIONS[ACTIVE_REGION_KEY]
+
+# Farm sites of offshore centraids to anchor compact farm layouts
+FARM_SITES = {
+    "tampen_box_a": FarmSite("tampen_box_a", "Hywind Tampen (synthetic layout)", lat0=61.33, lon0=2.70),
+    "utsira_nord_box_b": FarmSite("utsira_nord_box_b", "Utsira Nord (synthetic layout)", lat0=59.10, lon0=5.50),
+    "sn2_box_c": FarmSite("sn2_box_c", "SN2 (synthetic layout)", lat0=56.80, lon0=4.90),
+}
