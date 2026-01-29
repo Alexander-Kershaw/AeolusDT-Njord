@@ -1,0 +1,9 @@
+README.md
+pyproject.toml
+src/aeolusdt_njord.egg-info/PKG-INFO
+src/aeolusdt_njord.egg-info/SOURCES.txt
+src/aeolusdt_njord.egg-info/dependency_links.txt
+src/aeolusdt_njord.egg-info/requires.txt
+src/aeolusdt_njord.egg-info/top_level.txt
+src/njord/__init__.py
+src/njord/config.py
