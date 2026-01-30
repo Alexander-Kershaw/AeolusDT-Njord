@@ -18,7 +18,7 @@ class FarmSite:
 
 #  Time window for ERA5 data retreival
 DEFAULT_START = "2020-01-01"
-DEFAULT_END   = "2020-01-03"
+DEFAULT_END   = "2020-01-31" # Increased to 30 day window
 
 # ERA5 regions bounds (WGS84 lat/lon)
 REGIONS = {
