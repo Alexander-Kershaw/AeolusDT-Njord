@@ -3,11 +3,13 @@
 # =========================
 __pycache__/
 *.py[cod]
+*.pyo
 *.so
 *.egg-info/
 .eggs/
-build/
 dist/
+build/
+.ipynb_checkpoints/
 
 # Virtual environments
 .env
@@ -15,12 +17,15 @@ dist/
 venv/
 ENV/
 env/
+.env.*
+*.log
 
 # =========================
 # Conda
 # =========================
 conda-meta/
 *.conda
+*.env.yml
 
 # =========================
 # Jupyter
@@ -50,6 +55,12 @@ Thumbs.db
 # ERA5 NetCDF / Zarr / derived datasets
 data_lake/**
 
+# Allow directory structure only
+!data_lake/
+!data_lake/bronze/
+!data_lake/silver/
+!data_lake/gold/
+
 # =========================
 # Figures and  outputs
 # =========================
@@ -74,6 +85,9 @@ openfast_runs/
 # CDS / API credentials
 # =========================
 .cdsapirc
+*.key
+*.pem
+*.secret
 
 # =========================
 # Large scientific data formats
@@ -92,4 +106,38 @@ openfast_runs/
 .cache/
 pytest_cache/
 .mypy_cache/
+
+# =========================
+# Plots / figures (generated)
+# =========================
+viz/**
+!viz/
+!viz/README.md
+
+# =========================
+# OpenFAST outputs
+# =========================
+openfast/**/output/
+openfast/**/OutFiles/
+openfast/**/*.out
+openfast/**/*.outb
+openfast/**/*.ech
+openfast/**/*.sum
+openfast/**/*.fst.bak
+openfast/**/*.log
+
+
+# =========================
+# OpenFAST binaries
+# =========================
+openfast/bin/
+openfast/build/
+
+# =========================
+# Temporary / scratch
+# =========================
+tmp/
+scratch/
+*.tmp
+
 
