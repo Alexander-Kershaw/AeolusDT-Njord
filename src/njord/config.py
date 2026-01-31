@@ -19,6 +19,7 @@ class FarmSite:
 #  Time window for ERA5 data retreival
 DEFAULT_START = "2020-01-01"
 DEFAULT_END   = "2020-01-31" # Increased to 30 day window
+HEIGHTS = [10, 100] # Support both ERA5 10 and 100 m elevation (100m more realistic wind turbine hub height)
 
 # ERA5 regions bounds (WGS84 lat/lon)
 REGIONS = {

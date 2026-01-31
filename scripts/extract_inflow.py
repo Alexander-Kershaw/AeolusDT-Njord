@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from njord.config import REGIONS, DEFAULT_START, DEFAULT_END, FARM_SITES
+from njord.config import REGIONS, DEFAULT_START, DEFAULT_END, FARM_SITES, HEIGHTS
 
 def get_time_name(ds: xr.Dataset) -> str:
     for cand in ("time", "valid_time"):
@@ -71,56 +71,67 @@ def compute_speed_dir_from(u: xr.DataArray, v: xr.DataArray) -> tuple[xr.DataArr
     return speed, dir_from
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Extract per-turbine inflow time series from ERA5 u10/v10.")
+    p = argparse.ArgumentParser(description="Extract per-turbine inflow time series from ERA5 wind components u/v.")
     p.add_argument("--region", required=True, choices=sorted(REGIONS.keys()))
     p.add_argument("--start", default=DEFAULT_START)
     p.add_argument("--end", default=DEFAULT_END)
     p.add_argument("--rows", type=int, default=3)
     p.add_argument("--cols", type=int, default=4)
     p.add_argument("--spacing-km", type=float, default=1.2, help="turbine spacing in km (approx)")
+    p.add_argument("--height", type=int, default=10, choices=HEIGHTS, help="wind component height (m): 10 or 100")
     return p.parse_args()
 
 def main() -> int:
     args = parse_args()
     region_key = args.region
 
-    nc_path = Path(f"data_lake/bronze/era5/{region_key}/era5_single_levels_u10v10_{args.start}_to_{args.end}.nc")
+    u_name = f"u{args.height}"
+    v_name = f"v{args.height}"
+    s_name = f"speed{args.height}"
+    d_name = f"dir_from{args.height}"
+
+    nc_path = Path(f"data_lake/bronze/era5/{region_key}/era5_single_levels_{u_name}{v_name}_{args.start}_to_{args.end}.nc")
     if not nc_path.exists():
         raise FileNotFoundError(f"Missing ERA5 file: {nc_path}")
 
     ds = xr.open_dataset(nc_path)
     tname = get_time_name(ds)
 
-    u10 = ds["u10"]
-    v10 = ds["v10"]
-    speed10, dir_from10 = compute_speed_dir_from(u10, v10)
+    # Fail fast if names are missing
+    missing = [name for name in (u_name, v_name) if name not in ds.data_vars]
+    if missing:
+        raise KeyError(f"Expected variables {missing} not found in {nc_path}. Present={list(ds.data_vars)}")
+
+    u = ds[u_name]
+    v = ds[v_name]
+    speed, dir_from = compute_speed_dir_from(u, v)
 
     layout = make_compact_farm_layout(region_key, args.rows, args.cols, args.spacing_km)
     print(f"Layout turbines: {len(layout)}  (rows={args.rows}, cols={args.cols}) spacing_km={args.spacing_km}")
-    print("Layout bounds lat:", layout["lat"].min(), "->", layout["lat"].max())
-    print("Layout bounds lon:", layout["lon"].min(), "->", layout["lon"].max())
+    print("Using height:", args.height, "m")
+    print("ERA5 file:", nc_path.name)
 
     records = []
     times = ds[tname].values
 
     for _, trb in layout.iterrows():
-        lat = trb["lat"]
-        lon = trb["lon"]
+        lat = float(trb["lat"])
+        lon = float(trb["lon"])
 
-        u_ts = u10.interp(latitude=lat, longitude=lon)
-        v_ts = v10.interp(latitude=lat, longitude=lon)
-        s_ts = speed10.interp(latitude=lat, longitude=lon)
-        d_ts = dir_from10.interp(latitude=lat, longitude=lon)
+        u_ts = u.interp(latitude=lat, longitude=lon)
+        v_ts = v.interp(latitude=lat, longitude=lon)
+        s_ts = speed.interp(latitude=lat, longitude=lon)
+        d_ts = dir_from.interp(latitude=lat, longitude=lon)
 
         df = pd.DataFrame({
             "time": pd.to_datetime(times),
             "turbine_id": int(trb["turbine_id"]),
-            "lat": float(lat),
-            "lon": float(lon),
-            "u10": u_ts.values.astype(float),
-            "v10": v_ts.values.astype(float),
-            "speed10": s_ts.values.astype(float),
-            "dir_from10": d_ts.values.astype(float),
+            "lat": lat,
+            "lon": lon,
+            u_name: u_ts.values.astype(float),
+            v_name: v_ts.values.astype(float),
+            s_name: s_ts.values.astype(float),
+            d_name: d_ts.values.astype(float),
         })
         records.append(df)
 
@@ -128,11 +139,11 @@ def main() -> int:
 
     out_dir = Path("data_lake/gold/inflow") / region_key
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"inflow_u10v10_{args.start}_to_{args.end}_r{args.rows}c{args.cols}_sp{args.spacing_km:.1f}km.parquet"
+    out_path = out_dir / f"inflow_{u_name}{v_name}_{args.start}_to_{args.end}_r{args.rows}c{args.cols}_sp{args.spacing_km:.1f}km.parquet"
     out.to_parquet(out_path, index=False)
 
     print("Wrote inflow parquet", out_path)
-    print("Speed10 stats:", out["speed10"].min(), out["speed10"].mean(), out["speed10"].max())
+    print(f"{s_name} stats:", out[s_name].min(), out[s_name].mean(), out[s_name].max())
     return 0
 
 if __name__ == "__main__":
