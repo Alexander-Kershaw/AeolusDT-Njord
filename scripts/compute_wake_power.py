@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from njord.config import REGIONS
+from njord.config import REGIONS, HEIGHTS
 
 # Turbine and wake parameters
 P_RATED_MW = 5.0
@@ -23,14 +23,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--region", required=True, choices=sorted(REGIONS.keys()))
     p.add_argument("--start", required=True)
     p.add_argument("--end", required=True)
+    p.add_argument("--height", type=int, default=10, choices=HEIGHTS, help="use speed/dir columns at 10m or 100m")
     return p.parse_args()
 
-def latest_inflow_parquet(region_key: str, start: str, end: str) -> Path:
+def latest_inflow_parquet(region_key: str, start: str, end: str, height: int) -> Path:
     d = Path("data_lake/gold/inflow") / region_key
-    files = [f for f in d.glob("inflow_u10v10_*.parquet") if start in f.name and end in f.name]
-    files = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+    pat = f"inflow_u{height}v{height}_{start}_to_{end}_*.parquet"
+    files = sorted(d.glob(pat), key=lambda p: p.stat().st_mtime, reverse=True)
     if not files:
-        raise FileNotFoundError(f"No inflow parquet files in {d} matching start={start}, end={end}")
+        raise FileNotFoundError(f"No inflow parquet files in {d} matching {pat}")
     return files[0]
 
 def power_curve_mw(v: np.ndarray) -> np.ndarray:
@@ -113,36 +114,36 @@ def wake_adjust_speeds(v_free: np.ndarray, x_m: np.ndarray, y_m: np.ndarray) -> 
             v_eff[i] = v_free[i] * (1.0 - d_tot)
     return v_eff
 
+
 def main() -> int:
     args = parse_args()
     region_key = args.region
+    height = args.height
+    speed_col = f"speed{height}"
+    dir_col = f"dir_from{height}"
 
-    inflow_path = latest_inflow_parquet(region_key, args.start, args.end)
+    inflow_path = latest_inflow_parquet(region_key, args.start, args.end, height)
     df = pd.read_parquet(inflow_path)
     df["time"] = pd.to_datetime(df["time"])
 
-    # turbine layout
+    # layout
     layout = df[["turbine_id", "lat", "lon"]].drop_duplicates().sort_values("turbine_id").reset_index(drop=True)
     lat0 = float(layout["lat"].mean())
     lon0 = float(layout["lon"].mean())
-
     x_km, y_km = latlon_to_xy_km(layout["lat"].values, layout["lon"].values, lat0, lon0)
 
-    times = sorted(df["time"].unique())
-    n_turb = layout.shape[0]
+    gby = df.groupby("time", sort=True)
+
     farm_free = []
     farm_wake = []
 
-    # Group by time for timestep processing
-    gby = df.groupby("time", sort=True)
-
     for t, g in gby:
-        v_free = g.sort_values("turbine_id")["speed10"].values.astype(float)
-        wd_from = float(g["dir_from10"].mean())  
-        # Convert to downwind rotation:
-        # so direction FROM wd_from means wind blows TOWARD wd_to = wd_from + 180
+        g = g.sort_values("turbine_id")
+        v_free = g[speed_col].values.astype(float)
+        wd_from = float(g[dir_col].mean())
+
         wd_to = (wd_from + 180.0) % 360.0
-        theta = 90.0 - wd_to
+        theta = 90.0 - wd_to  # rotated so +x points downwind
 
         xr_km, yr_km = rotate_xy(x_km, y_km, theta)
         x_m = xr_km * 1000.0
@@ -169,21 +170,20 @@ def main() -> int:
     out_path = out_dir / f"wake_power_{inflow_path.stem}.parquet"
     out.to_parquet(out_path, index=False)
 
-    # Plot free, wake power
     Path("viz/wake").mkdir(parents=True, exist_ok=True)
     plt.figure()
     plt.plot(out["time"], out["p_farm_free_mw"], label="Free (no wakes)")
     plt.plot(out["time"], out["p_farm_wake_mw"], label="Wake-adjusted")
-    plt.title(f"Farm Power: free vs wake-adjusted | {region_key}")
+    plt.title(f"Farm Power: free vs wake-adjusted | {region_key} | {speed_col}")
     plt.xlabel("Time")
     plt.ylabel("Farm power (MW)")
     plt.legend(frameon=False)
-    plot_path = Path("viz/wake") / f"{region_key}_free_vs_wake_{args.start}_to_{args.end}.png"
+    plot_path = Path("viz/wake") / f"{region_key}_free_vs_wake_{args.start}_to_{args.end}_{speed_col}.png"
     plt.savefig(plot_path, dpi=180, bbox_inches="tight")
     plt.close()
 
-    # Regional summary
     print("Region:", region_key)
+    print("Height:", height, "m")
     print("Inflow:", inflow_path.name)
     print("Wrote:", out_path)
     print("Plot :", plot_path)
