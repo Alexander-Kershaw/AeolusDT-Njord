@@ -329,7 +329,27 @@ if overlay_mode != "Off":
             f"data_lake/bronze/era5/{region}/era5_single_levels_u{height}v{height}_{start}_to_{end}.nc"
         )
     else:
-        t_sel = st.sidebar.selectbox("Overlay timestamp", time_labels, index=0)
+        # --- Wind replay controls ---
+        if "wind_idx" not in st.session_state:
+            st.session_state.wind_idx = 0
+
+        colp, coln = st.sidebar.columns(2)
+        if colp.button("⏮ Prev"):
+            st.session_state.wind_idx = max(0, st.session_state.wind_idx - 1)
+        if coln.button("Next ⏭"):
+            st.session_state.wind_idx = min(len(time_labels) - 1, st.session_state.wind_idx + 1)
+
+        st.session_state.wind_idx = st.sidebar.slider(
+            "Overlay timestep index",
+            min_value=0,
+            max_value=len(time_labels) - 1,
+            value=int(st.session_state.wind_idx),
+            step=1,
+        )
+
+        t_sel = time_labels[int(st.session_state.wind_idx)]
+        st.sidebar.caption(f"Selected: {t_sel}")
+
         overlay_payload = build_wind_raster(
             region=region, start=start, end=end, height=height, time_label=t_sel,
             vmin=vmin, vmax=vmax, arrow_scale=arrow_scale, arrow_max_deg=arrow_max_deg
