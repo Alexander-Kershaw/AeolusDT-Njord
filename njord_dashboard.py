@@ -1,25 +1,27 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import date
+import base64
+
+import numpy as np
 import pandas as pd
 import streamlit as st
 import folium
 from folium.features import DivIcon
 from streamlit_folium import st_folium
-from datetime import date
+import xarray as xr
+import matplotlib.pyplot as plt
+from matplotlib import cm, colors
 
 from njord.config import REGIONS
 
-st.set_page_config(page_title="AeolusDT-Njord Wind Farm Twins", layout="wide")
+st.set_page_config(page_title="AeolusDT-Njord Wind Farm Twin", layout="wide")
 
 
 # Helpers
 def dtstr(d: date) -> str:
     return pd.to_datetime(d).strftime("%Y-%m-%d")
-
-def fmt_ts(ts: float) -> str:
-    # ts is epoch seconds
-    return pd.to_datetime(ts, unit="s").strftime("%Y-%m-%d %H:%M:%S")
 
 def mtime_str(p: Path) -> str:
     if not p.exists():
@@ -27,10 +29,19 @@ def mtime_str(p: Path) -> str:
     return pd.to_datetime(p.stat().st_mtime, unit="s").strftime("%Y-%m-%d %H:%M:%S")
 
 def hours_in_period(start: str, end: str) -> float:
-    # inclusive day range, hourly data
     t0 = pd.to_datetime(start)
     t1 = pd.to_datetime(end) + pd.Timedelta(days=1)
     return float((t1 - t0) / pd.Timedelta(hours=1))
+
+def get_time_name(ds: xr.Dataset) -> str:
+    for cand in ("time", "valid_time"):
+        if cand in ds.dims or cand in ds.coords:
+            return cand
+    raise KeyError(f"No time-like coord found. Coords={list(ds.coords)} Dims={list(ds.dims)}")
+
+def b64_png(path: Path) -> str:
+    data = path.read_bytes()
+    return base64.b64encode(data).decode("ascii")
 
 
 # Cached loaders
@@ -94,8 +105,136 @@ def load_density(region: str, start: str, end: str, height: int) -> tuple[pd.Dat
     return df, p
 
 
+# Wind overlay loaders
+@st.cache_data(show_spinner=False)
+def wind_nc_path(region: str, start: str, end: str, height: int) -> Path:
+    return Path(f"data_lake/bronze/era5/{region}/era5_single_levels_u{height}v{height}_{start}_to_{end}.nc")
 
-def region_map(region_sel: str, layout_df: pd.DataFrame, show_turbines: bool) -> folium.Map:
+@st.cache_data(show_spinner=False)
+def load_wind_times(region: str, start: str, end: str, height: int) -> list[str]:
+    p = wind_nc_path(region, start, end, height)
+    if not p.exists():
+        return []
+    ds = xr.open_dataset(p)
+    tname = get_time_name(ds)
+    times = pd.to_datetime(ds[tname].values)
+    return [t.strftime("%Y-%m-%d %H:%M") for t in times]
+
+@st.cache_data(show_spinner=False)
+def legend_png_path(vmin: float, vmax: float) -> Path:
+    out = Path("viz/dashboard")
+    out.mkdir(parents=True, exist_ok=True)
+    p = out / f"wind_legend_{int(vmin)}_{int(vmax)}.png"
+    if p.exists():
+        return p
+
+    fig = plt.figure(figsize=(3.6, 0.45), dpi=200)
+    ax = fig.add_axes([0.05, 0.45, 0.90, 0.35]) 
+    norm = colors.Normalize(vmin=vmin, vmax=vmax)
+    cb = plt.colorbar(cm.ScalarMappable(norm=norm, cmap="viridis"), cax=ax, orientation="horizontal")
+    cb.set_label("Wind speed (m/s)", fontsize=8)
+    cb.ax.tick_params(labelsize=7, length=2)
+    fig.savefig(p, bbox_inches="tight", transparent=True)
+    plt.close(fig)
+    return p
+
+@st.cache_data(show_spinner=False)
+def build_wind_raster(region: str, start: str, end: str, height: int, time_label: str,
+                      vmin: float, vmax: float, arrow_scale: float, arrow_max_deg: float) -> dict:
+    p = wind_nc_path(region, start, end, height)
+    if not p.exists():
+        return {"rgba": None, "bounds": None, "arrows": [], "legend_b64": None}
+
+    ds = xr.open_dataset(p)
+    if "latitude" in ds.coords:
+        ds = ds.sortby("latitude")
+    if "longitude" in ds.coords:
+        ds = ds.sortby("longitude")
+
+    tname = get_time_name(ds)
+    times = pd.to_datetime(ds[tname].values)
+    wanted = pd.to_datetime(time_label)
+    idx = int(np.argmin(np.abs(times - wanted)))
+
+    u_name = f"u{height}"
+    v_name = f"v{height}"
+    if u_name not in ds.data_vars or v_name not in ds.data_vars:
+        return {"rgba": None, "bounds": None, "arrows": [], "legend_b64": None}
+
+    u = ds[u_name].isel({tname: idx}).values.astype(float)
+    v = ds[v_name].isel({tname: idx}).values.astype(float)
+    speed = np.sqrt(u**2 + v**2)
+
+    lats = ds["latitude"].values
+    lons = ds["longitude"].values
+    latmin, latmax = float(lats.min()), float(lats.max())
+    lonmin, lonmax = float(lons.min()), float(lons.max())
+    bounds = [[latmin, lonmin], [latmax, lonmax]]
+
+    # RGBA raster
+    norm = colors.Normalize(vmin=vmin, vmax=vmax, clip=True)
+    cmap = cm.get_cmap("viridis")
+    rgba = (cmap(norm(speed)) * 255).astype(np.uint8)
+    rgba[..., 3] = 150 
+
+    arrows = []
+    step_i = max(1, len(lats) // 8)
+    step_j = max(1, len(lons) // 8)
+
+    # Windspeed vector arrow scaling
+    base_deg_per_ms = 0.0025  
+    k = base_deg_per_ms * arrow_scale
+
+    for ii in range(0, len(lats), step_i):
+        for jj in range(0, len(lons), step_j):
+            lat0 = float(lats[ii])
+            lon0 = float(lons[jj])
+            uij = float(u[ii, jj])
+            vij = float(v[ii, jj])
+
+            dlat = vij * k
+            dlon = uij * k
+
+            # capped arrow length 
+            L = float(np.sqrt(dlat**2 + dlon**2))
+            if L > arrow_max_deg and L > 0:
+                s = arrow_max_deg / L
+                dlat *= s
+                dlon *= s
+
+            lat1 = lat0 + dlat
+            lon1 = lon0 + dlon
+            arrows.append(((lat0, lon0), (lat1, lon1)))
+
+    leg_path = legend_png_path(vmin, vmax)
+    legend_b64 = b64_png(leg_path)
+
+    return {"rgba": rgba, "bounds": bounds, "arrows": arrows, "legend_b64": legend_b64}
+
+def add_legend_to_map(m: folium.Map, legend_b64: str) -> None:
+    if not legend_b64:
+        return
+    html = f"""
+    <div style="
+        position: fixed;
+        bottom: 18px;
+        left: 18px;
+        z-index: 9999;
+        background: rgba(255,255,255,0.75);
+        padding: 6px 8px;
+        border-radius: 8px;
+        box-shadow: 0 1px 10px rgba(0,0,0,0.15);
+    ">
+      <img src="data:image/png;base64,{legend_b64}" style="display:block; width:260px;">
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(html))
+
+
+# Map builder
+def build_map(region_sel: str, layout_df: pd.DataFrame, show_turbines: bool,
+              overlay_mode: str, overlay_payload: dict | None) -> folium.Map:
+
     m = folium.Map(
         location=[63.5, 6.0],
         zoom_start=4,
@@ -125,6 +264,27 @@ def region_map(region_sel: str, layout_df: pd.DataFrame, show_turbines: bool) ->
             ),
         ).add_to(m)
 
+    if overlay_mode != "Off" and overlay_payload and overlay_payload.get("rgba") is not None:
+        folium.raster_layers.ImageOverlay(
+            image=overlay_payload["rgba"],
+            bounds=overlay_payload["bounds"],
+            opacity=0.45,
+            interactive=False,
+            cross_origin=False,
+            zindex=3,
+        ).add_to(m)
+
+        add_legend_to_map(m, overlay_payload.get("legend_b64"))
+
+        if overlay_mode == "Speed + arrows":
+            for (lat0, lon0), (lat1, lon1) in overlay_payload.get("arrows", []):
+                folium.PolyLine(
+                    locations=[(lat0, lon0), (lat1, lon1)],
+                    weight=3,
+                    opacity=0.95,
+                    color="#111",
+                ).add_to(m)
+
     if show_turbines and not layout_df.empty:
         for _, row in layout_df.iterrows():
             folium.CircleMarker(
@@ -138,7 +298,6 @@ def region_map(region_sel: str, layout_df: pd.DataFrame, show_turbines: bool) ->
 
     return m
 
-
 # UI
 st.title("AeolusDT-Njord Offshore Wind Farm Digital Twin")
 
@@ -150,15 +309,38 @@ with st.sidebar:
     region = st.selectbox("Region", ["tampen_box_a", "utsira_nord_box_b", "sn2_box_c"], index=0)
     show_turbs = st.checkbox("Show turbine points", value=True)
 
+    st.divider()
+    st.subheader("Wind overlay")
+    overlay_mode = st.selectbox("Overlay mode", ["Off", "Speed raster", "Speed + arrows"], index=1)
+    vmin, vmax = 0.0, 30.0
+    arrow_scale = st.slider("Arrow scale", min_value=0.5, max_value=6.0, value=2.5, step=0.5)
+    arrow_max_deg = st.slider("Arrow max length", min_value=0.01, max_value=0.12, value=0.06, step=0.01)
+
 start = dtstr(d0)
 end = dtstr(d1)
+
+overlay_payload = None
+if overlay_mode != "Off":
+    time_labels = load_wind_times(region, start, end, height)
+    if not time_labels:
+        st.sidebar.warning(
+            "No wind NetCDF found for this selection.\n"
+            "Expected:\n"
+            f"data_lake/bronze/era5/{region}/era5_single_levels_u{height}v{height}_{start}_to_{end}.nc"
+        )
+    else:
+        t_sel = st.sidebar.selectbox("Overlay timestamp", time_labels, index=0)
+        overlay_payload = build_wind_raster(
+            region=region, start=start, end=end, height=height, time_label=t_sel,
+            vmin=vmin, vmax=vmax, arrow_scale=arrow_scale, arrow_max_deg=arrow_max_deg
+        )
 
 colA, colB = st.columns([1.2, 1.0], gap="large")
 
 with colA:
-    st.subheader("Farm regions and turbine layout map")
+    st.subheader("Regions and turbine layout map")
     layout = load_layout(region, start, end, height)
-    m = region_map(region, layout, show_turbs)
+    m = build_map(region, layout, show_turbs, overlay_mode, overlay_payload)
     st_folium(m, width=900, height=520)
 
 with colB:
@@ -171,27 +353,21 @@ with colB:
 
 st.divider()
 
-
-# Load time series
 base, base_path = load_baseline_farm(region, start, end, height)
 wake, wake_path = load_wake(region, start, end, height)
 dens, dens_path = load_density(region, start, end, height)
 
-
-# KPIs
 st.subheader("KPIs (for selected region)")
 
 if base.empty:
     st.warning("Baseline power parquet not found for this selection.")
 else:
-    # Merge series on time
     ts = base.copy()
     if not wake.empty:
         ts = ts.merge(wake[["time", "p_farm_wake_mw", "wake_loss_pct"]], on="time", how="left")
     if not dens.empty:
         ts = ts.merge(dens[["time", "p_farm_rho_mw", "delta_pct"]], on="time", how="left")
 
-    # Region row from report
     region_row = None
     if not rep.empty and "region" in rep.columns:
         rr = rep[rep["region"] == region]
@@ -205,21 +381,13 @@ else:
         c3.metric("Capacity factor (density)", f"{region_row['cf_density']:.3f}")
         c4.metric("Energy (baseline, MWh)", f"{region_row['energy_baseline_mwh']:.0f}")
     else:
-        # fallback KPIs from time series only
         H = hours_in_period(start, end)
-        p_cap = 60.0  # 12 x 5 turbines rated at 5MW
+        p_cap = 60.0
         e_base = float(ts["p_farm_base_mw"].sum())
         cf_base = e_base / (p_cap * H)
         c1.metric("Capacity factor (baseline)", f"{cf_base:.3f}")
-        if "p_farm_wake_mw" in ts.columns:
-            e_w = float(ts["p_farm_wake_mw"].sum())
-            c2.metric("Capacity factor (wake)", f"{(e_w / (p_cap * H)):.3f}")
-        if "p_farm_rho_mw" in ts.columns:
-            e_d = float(ts["p_farm_rho_mw"].sum())
-            c3.metric("Capacity factor (density)", f"{(e_d / (p_cap * H)):.3f}")
         c4.metric("Energy (baseline, MWh)", f"{e_base:.0f}")
 
-    # Additional KPI stats
     c5, c6, c7, c8 = st.columns(4)
     if "wake_loss_pct" in ts.columns:
         c5.metric("Mean wake loss %", f"{float(ts['wake_loss_pct'].mean()):.2f}%")
@@ -229,7 +397,6 @@ else:
         c6.metric("Max wake loss %", "n/a")
 
     if "delta_pct" in ts.columns:
-        # density uplift relies on farm producing power
         producing = ts["p_farm_base_mw"] > 0
         mean_uplift = float(ts.loc[producing, "delta_pct"].mean()) if producing.any() else 0.0
         c7.metric("Mean density uplift %", f"{mean_uplift:.2f}%")
@@ -238,8 +405,6 @@ else:
         c7.metric("Mean density uplift %", "n/a")
         c8.metric("Max density uplift %", "n/a")
 
-  
-    # Time series with zoom window
     st.subheader("Time series (farm power output)")
     tmin = ts["time"].min()
     tmax = ts["time"].max()
@@ -258,12 +423,12 @@ else:
             cols.append(c)
 
     st.line_chart(z[cols], height=340, use_container_width=True)
-    st.caption("Baseline = power curve. Wake = Jensen wake deficit. Density = baseline scaled by ρ/1.225 and capped at rated power.")
 
-
-    # Provenance
-    with st.expander("Data provenance"):
+    with st.expander("Data provenance (files used)"):
         inflow_p = find_latest_inflow_path(region, start, end, height)
+        wf = wind_nc_path(region, start, end, height)
+        st.write("Wind file:", str(wf))
+        st.write("Wind modified:", mtime_str(wf))
         st.write("Inflow file:", str(inflow_p) if inflow_p else "missing")
         if inflow_p:
             st.write("Inflow modified:", mtime_str(inflow_p))
@@ -276,3 +441,4 @@ else:
         st.write("Density file:", str(dens_path) if dens_path else "missing")
         if dens_path:
             st.write("Density modified:", mtime_str(dens_path))
+
